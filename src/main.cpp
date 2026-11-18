@@ -32,6 +32,7 @@ struct Settings {
   bool  dosingEnabled = false;   // false = Testmodus
   int   flowDelayMin  = 10;
   bool  flowInvert    = false;
+  bool  earlyStop     = true;    // Impuls vorzeitig beenden, sobald der Zielbereich erreicht ist
   float pulseVal      = 10.0f;   // Dosierdauer pro Impuls, Einheit siehe pulseMin
   bool  pulseMin      = false;   // false = Sekunden, true = Minuten
   int   mixMin        = 15;
@@ -45,6 +46,7 @@ struct Settings {
   // Pumpen / Behälter
   float mlPerMin[2] = {60.0f, 60.0f};
   float tankMl[2]   = {5000.0f, 5000.0f};
+  bool  refillResetsRun = false;   // "Behälter aufgefüllt" setzt auch die Gesamtlaufzeit zurück
   int   saveIntervalMin = 120;     // Zähler höchstens so oft in den Flash schreiben (nur bei Änderungen)
   // Sicherungen
   bool  sfFlow = true;
@@ -109,6 +111,7 @@ static const Param PARAMS[] = {
   fI("flowDly", "Dosierfreigabe nach Filterstart (min)", S.flowDelayMin, "Wartezeit, bis die Sonden aktuelle Werte liefern."),
   fB("flowInv", "Durchflussschalter invertieren", S.flowInvert, "Nur ändern, wenn Filter=läuft/steht vertauscht angezeigt wird."),
   fF("pulseV",  "Dosierdauer pro Impuls", S.pulseVal, "Pumpe läuft so lange, dann folgt die Mischzeit. Einheit: siehe nächste Zeile."),
+  fB("early",   "Impuls vorzeitig beenden, wenn der Zielbereich erreicht ist", S.earlyStop, "Empfohlen bei langen Impulsen. Aus = jeder Impuls läuft immer die volle Dosierdauer."),
   fB("pulseMin","Dosierdauer in Minuten angeben", S.pulseMin, "Aus = Sekunden (kleine Pools), an = Minuten (große Pools, langsame Pumpen)."),
   fI("mix",     "Mischzeit zwischen Impulsen (min)", S.mixMin, "Mindestpause pro Pumpe, damit sich der Wert einstellen kann."),
   fI("filtN",   "Mittelwert über N Messwerte", S.filterN, "Glättet schwankende Sonden. 1 = aus."),
@@ -126,10 +129,11 @@ static const Param PARAMS[] = {
   fF("orpStop", "Stopp: Zielwert + Delta (mV)", S.orpStop, "Dosieren endet, sobald Redox Zielwert + Delta erreicht."),
 
   fH("Pumpen und Behälter"),
-  fF("ml1",     "Pumpe 1: Förderleistung (ml/min)", S.mlPerMin[0], "Am besten mit Messbecher ausmessen (Test-Funktion unten)."),
-  fF("ml2",     "Pumpe 2: Förderleistung (ml/min)", S.mlPerMin[1], ""),
-  fF("tank1",   "Behälter 1: Volumen (ml)", S.tankMl[0], ""),
-  fF("tank2",   "Behälter 2: Volumen (ml)", S.tankMl[1], ""),
+  fF("ml1",     "Pumpe 1 · pH-Minus: Förderleistung (ml/min)", S.mlPerMin[0], "Am besten mit Messbecher ausmessen (Test-Funktion unter Wartung)."),
+  fF("tank1",   "Behälter 1 · pH-Minus: Volumen (ml)", S.tankMl[0], ""),
+  fF("ml2",     "Pumpe 2 · Chlor: Förderleistung (ml/min)", S.mlPerMin[1], ""),
+  fF("tank2",   "Behälter 2 · Chlor: Volumen (ml)", S.tankMl[1], ""),
+  fB("refRun",  "Gesamtlaufzeit beim Auffüllen zurücksetzen", S.refillResetsRun, "An: „Behälter aufgefüllt“ setzt auch die Gesamtlaufzeit der Pumpe auf 0 (Laufzeit je Behälterfüllung). Die Tageswerte (Laufzeit und Dosierungen heute) bleiben immer unberührt."),
   fI("saveInt", "Zähler speichern alle (min)", S.saveIntervalMin, "Nur bei Änderungen. Sofort gespeichert wird bei Neustart über die Oberfläche, WLAN-Update, Benutzeraktionen und Tageswechsel. Bei Stromausfall gehen Änderungen seit dem letzten Speichern verloren."),
 
   fH("Sicherungen"),
@@ -199,7 +203,7 @@ static const size_t NPARAMS = sizeof(PARAMS) / sizeof(PARAMS[0]);
 // ===================== Laufzeit-Zustand =====================
 struct PumpState {
   bool on = false, manual = false, active = false;
-  uint32_t startMs = 0, endMs = 0, manualMs = 0;
+  uint32_t startMs = 0, endMs = 0, manualMs = 0, limitMs = 0;
   float remMl = 0, totalRunSec = 0, dayRunSec = 0;
   uint16_t dayDoses = 0;
   char state[72] = "Start";
@@ -251,6 +255,22 @@ static void applyTime() {
 }
 
 static uint32_t pulseMs() { return (uint32_t)(S.pulseVal * (S.pulseMin ? 60000.0f : 1000.0f)); }
+
+// Länge des nächsten Impulses: Dosierdauer, begrenzt durch die Resttageslaufzeit und den rechnerischen Behälterrest
+static uint32_t pulseLimitMs(int i) {
+  uint32_t lim = pulseMs();
+  if (S.sfMaxRun) {
+    float r = S.maxRunMin * 60.0f - P[i].dayRunSec;
+    uint32_t v = r > 0 ? (uint32_t)(r * 1000.0f) : 0;
+    if (v < lim) lim = v;
+  }
+  if (S.sfTank) {
+    float t = P[i].remMl > 0 ? P[i].remMl / S.mlPerMin[i] * 60000.0f : 0.0f;
+    uint32_t v = (uint32_t)t;
+    if (v < lim) lim = v;
+  }
+  return lim;
+}
 
 void sanitize() {
   S.flowDelayMin = constrain(S.flowDelayMin, 0, 240);
@@ -368,6 +388,7 @@ void pumpOff(int i) {
 void pumpOn(int i, uint32_t manualMs) {
   PumpState &p = P[i];
   p.on = true; p.manual = manualMs > 0; p.manualMs = manualMs; p.startMs = millis();
+  p.limitMs = p.manual ? manualMs : pulseLimitMs(i);
   if (!p.manual) p.dayDoses++;
   savePump(i);
   digitalWrite(RELAY_PIN[i], HIGH);
@@ -436,8 +457,16 @@ void controlStep() {
     PumpState &p = P[i];
     if (!p.on) continue;
     uint32_t el = now - p.startMs;
-    if (p.manual) { if (el >= p.manualMs) pumpOff(i); }
-    else if (!S.dosingEnabled || !flowOk || !dataOk || el >= pulseMs()) pumpOff(i);
+    if (p.manual) { if (el >= p.manualMs) pumpOff(i); continue; }
+    bool ctlOff = (i == 0) ? !S.phOn : !S.orpOn;
+    const char *stopWhy = nullptr;
+    if (!S.dosingEnabled) stopWhy = "Dosierung deaktiviert";
+    else if (!flowOk) stopWhy = "kein Durchfluss";
+    else if (!dataOk) stopWhy = "Messdaten fehlen";
+    else if (ctlOff) stopWhy = "Regelung deaktiviert";
+    else if (S.earlyStop && !p.active) stopWhy = "Zielwert erreicht";
+    if (stopWhy) { Serial.printf("Pumpe %d stoppt vorzeitig: %s\n", i + 1, stopWhy); pumpOff(i); }
+    else if (el >= p.limitMs) pumpOff(i);                  // Impulsende (Dosierdauer, Tageslimit oder Behälterrest)
   }
 
   // Hysterese
@@ -467,6 +496,7 @@ void controlStep() {
     else if (S.sfTank && p.remMl <= 0) why = "Gesperrt: Behälter leer";
     else if (S.sfMaxDoses && p.dayDoses >= S.maxDoses) why = "Gesperrt: Tageslimit Dosierungen";
     else if (S.sfMaxRun && p.dayRunSec >= S.maxRunMin * 60.0f) why = "Gesperrt: Tageslimit Laufzeit";
+    else if (pulseLimitMs(i) < 1000) why = "Gesperrt: Restlaufzeit oder Behälterrest zu klein";
     else if (i == 0 && S.sfPhMin && ph < S.phAbsMin) why = "Gesperrt: pH unter Grenzwert";
     else if (!p.active) why = "Im Zielbereich";
     else if (p.endMs != 0 && now - p.endMs < mixMs) {
@@ -821,7 +851,7 @@ void handleAction() {
   String a = server.arg("a");
   int i = constrain(server.arg("i").toInt(), 0, 1);
   float v = server.arg("v").toFloat();
-  if (a == "refill") { P[i].remMl = S.tankMl[i]; savePump(i, true); }
+  if (a == "refill") { P[i].remMl = S.tankMl[i]; if (S.refillResetsRun) P[i].totalRunSec = 0; savePump(i, true); }
   else if (a == "resetrun") { P[i].totalRunSec = 0; savePump(i, true); }
   else if (a == "resetday") { P[i].dayRunSec = 0; P[i].dayDoses = 0; savePump(i, true); }
   else if (a == "setvals") {                       // gespeicherte Werte überschreiben (z. B. nach Stromausfall)

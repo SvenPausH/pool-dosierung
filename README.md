@@ -123,7 +123,12 @@ Jede Pumpe wird alle 250 ms bewertet. Ein Impuls startet nur, wenn **alle** Bedi
 7. Keine andere Pumpe läuft (wenn „immer nur eine Pumpe“ aktiv ist)
 
 Der pH-Minus-Pumpe (Pumpe 1) wird Vorrang gegeben, weil die Chlorwirkung vom pH abhängt.
-Während eines Impulses wird sofort abgeschaltet, wenn der Durchfluss ausfällt, die Messdaten ausbleiben oder die Dosierung deaktiviert wird.
+Während eines Impulses wird sofort abgeschaltet, wenn der Durchfluss ausfällt, die Messdaten ausbleiben, die Regelung oder die Dosierung deaktiviert wird.
+Mit der Option **„Impuls vorzeitig beenden, wenn der Zielbereich erreicht ist“** (Standard an) endet ein laufender Impuls außerdem, sobald der Regelwert die Stoppschwelle
+erreicht. Das ist vor allem bei langen Impulsen (Minuten) wichtig. Danach beginnt wie üblich die Mischzeit.
+Die Länge eines Impulses wird zusätzlich auf die **verbleibende Tageslaufzeit** (wenn das Tageslimit aktiv ist) und den **rechnerischen Behälterrest**
+(wenn die Behältersperre aktiv ist) begrenzt. So kann ein einzelner Impuls diese Grenzen nicht überschreiten.
+Bleibt weniger als 1 Sekunde übrig, wird nicht mehr gestartet.
 
 ### Hysterese
 
@@ -193,10 +198,12 @@ verwendeten NTP-Server, daran sieht man, ob die Synchronisation geklappt hat.
 | | Durchflussschalter invertieren | aus |
 | | Dosierdauer pro Impuls / Einheit | 10 / Sekunden |
 | | Mischzeit zwischen Impulsen | 15 min |
+| | Impuls vorzeitig beenden bei Zielwert | an |
 | | Mittelwert über N Messwerte | 5 |
 | pH | Regelung aktiv / Zielwert / Delta Start / Delta Stopp | an / 7,2 / 0,2 / 0,05 |
 | Redox | Regelung aktiv / Zielwert / Delta Start / Delta Stopp | an / 700 mV / 30 / 10 |
 | Pumpen | Förderleistung je Pumpe (ml/min) | 60 |
+| | Gesamtlaufzeit beim Auffüllen zurücksetzen | aus |
 | | Zähler speichern alle (min) | 120 |
 | Behälter | Volumen je Behälter (ml) | 5000 |
 | Sicherungen | Nur bei Durchfluss dosieren | an |
@@ -221,7 +228,10 @@ Die Tageszähler werden um Mitternacht (NTP-Zeit, Europa/Berlin) zurückgesetzt.
 ### Behälter und Zähler
 
 Der Füllstand wird **rechnerisch** aus Laufzeit × Förderleistung ermittelt, nicht gemessen. Nach dem Auffüllen unter Wartung
-„Behälter aufgefüllt“ drücken. Die Gesamtlaufzeit je Pumpe ist ein Zähler, der separat zurückgesetzt werden kann.
+„Behälter aufgefüllt“ drücken. Die Gesamtlaufzeit je Pumpe ist ein Zähler, der separat zurückgesetzt werden kann. Mit der Option
+„Gesamtlaufzeit beim Auffüllen zurücksetzen“ zählt er stattdessen die Laufzeit je Behälterfüllung.
+Die **Tageswerte** (Laufzeit und Dosierungen heute) werden beim Auffüllen bewusst **nicht** zurückgesetzt, weil sie als Tageslimit
+vor Überdosierung schützen und nur um Mitternacht (oder manuell unter Wartung) auf 0 gehen.
 
 ### Gespeicherte Werte überschreiben (z. B. nach Stromausfall)
 
