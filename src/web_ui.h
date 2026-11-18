@@ -73,7 +73,7 @@ async function tick(){
    $('b'+i).style.background=p.tankPct<15?'var(--bad)':p.tankPct<30?'var(--warn)':'var(--ok)';
    $('k'+i).innerHTML=`Behälter: ${f(p.tankPct,0)} % (${f(p.tankMl/1000,2)} l)<br>Laufzeit gesamt: ${dur(p.runSec)}<br>Heute: ${dur(p.dayRunSec)}, ${p.dayDoses} Dosierungen<br>${f(p.mlPulse,1)} ml pro Impuls`;
   });
-  $('info').textContent=(d.mode=='ap'?'Setup-Modus (AP)':'WLAN '+d.rssi+' dBm')+' · IP '+d.ip+' · MQTT: '+d.mqtt+' · InfluxDB: '+d.influx+' · Messdaten vor '+f(d.dataAge,0)+' s · Laufzeit '+dur(d.uptime)+' · Uhrzeit '+(d.time||'nicht synchronisiert')+' · Heap '+Math.round(d.heap/1024)+' kB';
+  $('info').textContent=(d.mode=='ap'?'Setup-Modus (AP)':'WLAN '+d.rssi+' dBm')+' · IP '+d.ip+' · MQTT: '+d.mqtt+' · InfluxDB: '+d.influx+' · Messdaten vor '+f(d.dataAge,0)+' s · Laufzeit '+dur(d.uptime)+' · Uhrzeit '+(d.time||'nicht synchronisiert')+(d.ntp?' (NTP '+d.ntp+')':'')+' · Heap '+Math.round(d.heap/1024)+' kB';
  }catch(e){$('conn').textContent='offline';$('conn').className='pill off'}
 }
 (async function loop(){await tick();setTimeout(loop,1000)})();

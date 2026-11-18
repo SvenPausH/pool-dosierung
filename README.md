@@ -178,9 +178,11 @@ Leuchtet die LED genau andersherum (meist an, mit kurzen Aussetzern), die Option
 ## Uhrzeit (NTP)
 
 Die Uhrzeit kommt per NTP. Sie wird nur für den **Tageswechsel der Zähler** gebraucht, die Dosierlogik läuft auch ohne.
-Server und Zeitzone sind einstellbar (Standard `pool.ntp.org`, `CET-1CEST,M3.5.0,M10.5.0/3` für Europa/Berlin).
-Für einen NTP-Server im eigenen Netz Hostname oder IP eintragen. Die per DHCP gemeldete Adresse (Option 42) wird **nicht** ausgewertet.
-Auf der Startseite steht in der Statuszeile die aktuelle Uhrzeit, daran sieht man, ob die Synchronisation geklappt hat.
+Standardmäßig wird der **NTP-Server übernommen, den der DHCP-Server meldet** (DHCP-Option 42). Meldet der DHCP-Server keinen,
+gilt der eingetragene Rückfall-Server (Standard `pool.ntp.org`, ein Hostname oder eine IP im eigenen Netz geht auch).
+Die Zeitzone ist einstellbar (Standard `CET-1CEST,M3.5.0,M10.5.0/3` für Europa/Berlin).
+Eine Änderung der NTP-Quelle startet das Gerät neu. Auf der Startseite steht in der Statuszeile die aktuelle Uhrzeit mit dem
+verwendeten NTP-Server, daran sieht man, ob die Synchronisation geklappt hat.
 
 ## Einstellungen im Überblick
 
@@ -204,7 +206,7 @@ Auf der Startseite steht in der Statuszeile die aktuelle Uhrzeit, daran sieht ma
 | | Immer nur eine Pumpe gleichzeitig | an |
 | | Sperre bei leerem Behälter | an |
 | | Kein pH-Minus unter pH-Grenzwert | an / 6,8 |
-| Uhrzeit | NTP-Server, Zeitzone | pool.ntp.org / CET-1CEST,M3.5.0,M10.5.0/3 |
+| Uhrzeit | NTP aus DHCP, NTP-Server (Rückfall), Zeitzone | an / pool.ntp.org / CET-1CEST,M3.5.0,M10.5.0/3 |
 | Status-LED | aktiv, Logik invertieren | an / aus |
 | Messwerte | Datapoint-IDs (Temperatur, pH, Redox) | 8 / 106 / 131 |
 | | Debug-Ausgabe der Rohdaten | aus |

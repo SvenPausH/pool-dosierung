@@ -16,6 +16,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+#include "lwip/apps/sntp.h"
 #include "web_ui.h"
 
 // ===================== Hardware =====================
@@ -54,6 +55,7 @@ struct Settings {
   bool  sfTank = true;
   bool  sfPhMin = true;  float phAbsMin = 6.8f;
   // Uhrzeit / LED
+  bool  ntpDhcp = true;                       // NTP-Server aus DHCP (Option 42) übernehmen, falls geliefert
   char  ntpServer[48] = "pool.ntp.org";
   char  tzString[48]  = "CET-1CEST,M3.5.0,M10.5.0/3";   // Europa/Berlin
   bool  ledOn = true;
@@ -143,7 +145,8 @@ static const Param PARAMS[] = {
   fF("phAbs",   "… pH-Grenzwert", S.phAbsMin, ""),
 
   fH("Uhrzeit (NTP)"),
-  fS("ntp",     "NTP-Server", S.ntpServer, "Hostname oder IP, z. B. der NTP-Server im eigenen Netz. Die per DHCP gemeldete Adresse (Option 42) wird nicht ausgewertet."),
+  fB("ntpDhcp", "NTP-Server aus DHCP übernehmen", S.ntpDhcp, "Nutzt den vom DHCP-Server gemeldeten NTP-Server (Option 42), falls vorhanden. Änderung startet das Gerät neu."),
+  fS("ntp",     "NTP-Server (Rückfall)", S.ntpServer, "Wird genutzt, wenn der DHCP-Server keinen NTP-Server meldet oder die Übernahme aus ist. Hostname oder IP."),
   fS("tz",      "Zeitzone (POSIX-Format)", S.tzString, "Europa/Berlin: CET-1CEST,M3.5.0,M10.5.0/3"),
 
   fH("Status-LED"),
@@ -239,6 +242,9 @@ static String urlEnc(const char *s) {
 }
 
 static void applyTime() {
+#ifdef CONFIG_LWIP_DHCP_GET_NTP_SRV
+  sntp_servermode_dhcp(S.ntpDhcp ? 1 : 0);        // muss vor dem Start von SNTP gesetzt werden
+#endif
   configTzTime(S.tzString[0] ? S.tzString : "CET-1CEST,M3.5.0,M10.5.0/3", S.ntpServer[0] ? S.ntpServer : "pool.ntp.org");
 }
 
@@ -516,6 +522,11 @@ String statusJson() {
     if (t > 1700000000) { struct tm lt; localtime_r(&t, &lt); strftime(tb, sizeof tb, "%d.%m.%Y %H:%M:%S", &lt); }
     j += "\"time\":\""; j += tb; j += "\",";
     j += "\"heap\":"; j += ESP.getFreeHeap(); j += ',';
+    {
+      const ip_addr_t *ns = sntp_getserver(0); const char *nn = sntp_getservername(0);
+      String nt = nn ? String(nn) : (ns && !ip_addr_isany(ns) ? String(ipaddr_ntoa(ns)) : String(""));
+      j += "\"ntp\":\""; j += nt; j += "\",";
+    }
   }
   j += "\"mode\":\""; j += apMode ? "ap" : "sta"; j += "\",";
   j += "\"ip\":\""; j += (apMode ? WiFi.softAPIP() : WiFi.localIP()).toString(); j += "\",";
@@ -751,7 +762,9 @@ void handleSettings() {
 }
 void handleSave() {
   if (needAuth()) return;
-  char oldSsid[sizeof S.wifiSsid], oldPass[sizeof S.wifiPass];
+  char oldSsid[sizeof S.wifiSsid], oldPass[sizeof S.wifiPass], oldNtp[sizeof S.ntpServer];
+  bool oldNtpDhcp = S.ntpDhcp;
+  strlcpy(oldNtp, S.ntpServer, sizeof oldNtp);
   strlcpy(oldSsid, S.wifiSsid, sizeof oldSsid); strlcpy(oldPass, S.wifiPass, sizeof oldPass);
   for (size_t i = 0; i < NPARAMS; i++) {
     const Param &p = PARAMS[i];
@@ -768,6 +781,7 @@ void handleSave() {
   applyTime();
   for (int i = 0; i < 2; i++) savePump(i);
   if (strcmp(oldSsid, S.wifiSsid) != 0 || strcmp(oldPass, S.wifiPass) != 0) restartAtMs = millis() + 2000;   // neue WLAN-Daten -> Neustart
+  if (strcmp(oldNtp, S.ntpServer) != 0 || oldNtpDhcp != S.ntpDhcp) restartAtMs = millis() + 2000;           // NTP-Quelle geändert -> Neustart
   server.sendHeader("Location", "/settings?saved=1");
   server.send(303);
 }
