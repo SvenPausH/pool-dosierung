@@ -233,6 +233,12 @@ Der Füllstand wird **rechnerisch** aus Laufzeit × Förderleistung ermittelt, n
 Die **Tageswerte** (Laufzeit und Dosierungen heute) werden beim Auffüllen bewusst **nicht** zurückgesetzt, weil sie als Tageslimit
 vor Überdosierung schützen und nur um Mitternacht (oder manuell unter Wartung) auf 0 gehen.
 
+### Behältermenge berechnen
+| Produkt | Gewicht | Dichte ca. | Tatsächliches Volumen |
+|---|---|---|---|
+| pH Minus 14,9% | 20 kg | ca. 1,10 kg/l | ca. 18,2 Liter |
+| Chlor 13% | 25 kg | ca. 1,22 kg/l | ca. 20,5 Liter |
+
 ### Gespeicherte Werte überschreiben (z. B. nach Stromausfall)
 
 Unter Einstellungen → Wartung zeigt jede Pumpe die gespeicherten Werte: **Füllstand (ml)**, **Gesamtlaufzeit (s)**, **Laufzeit heute (s)** und **Dosierungen heute**.
