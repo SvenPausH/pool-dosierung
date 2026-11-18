@@ -197,6 +197,7 @@ verwendeten NTP-Server, daran sieht man, ob die Synchronisation geklappt hat.
 | pH | Regelung aktiv / Zielwert / Delta Start / Delta Stopp | an / 7,2 / 0,2 / 0,05 |
 | Redox | Regelung aktiv / Zielwert / Delta Start / Delta Stopp | an / 700 mV / 30 / 10 |
 | Pumpen | Förderleistung je Pumpe (ml/min) | 60 |
+| | Zähler speichern alle (min) | 120 |
 | Behälter | Volumen je Behälter (ml) | 5000 |
 | Sicherungen | Nur bei Durchfluss dosieren | an |
 | | Sperre bei veralteten Messdaten / nach | an / 3 min |
@@ -222,6 +223,13 @@ Die Tageszähler werden um Mitternacht (NTP-Zeit, Europa/Berlin) zurückgesetzt.
 Der Füllstand wird **rechnerisch** aus Laufzeit × Förderleistung ermittelt, nicht gemessen. Nach dem Auffüllen unter Wartung
 „Behälter aufgefüllt“ drücken. Die Gesamtlaufzeit je Pumpe ist ein Zähler, der separat zurückgesetzt werden kann.
 
+### Gespeicherte Werte überschreiben (z. B. nach Stromausfall)
+
+Unter Einstellungen → Wartung zeigt jede Pumpe die gespeicherten Werte: **Füllstand (ml)**, **Gesamtlaufzeit (s)**, **Laufzeit heute (s)** und **Dosierungen heute**.
+Die Felder lassen sich überschreiben und mit „Werte übernehmen“ speichern. Nach einem Stromausfall kannst du so die letzten Werte aus MQTT/InfluxDB
+(`tankN_ml`, `pumpN_runtime_s`, `pumpN_day_runtime_s`, `pumpN_day_doses`) eintragen. Läuft die Pumpe gerade, wird das Überschreiben abgelehnt.
+„Behälter aufgefüllt“ setzt den Füllstand weiterhin auf das eingestellte Behältervolumen.
+
 ### Testmodus
 
 Mit „Dosierung aktiv“ = aus werden die Pumpen nie geschaltet. Die Startseite zeigt trotzdem pro Pumpe, was der Regler tun würde
@@ -239,7 +247,10 @@ Basis-Topic ist einstellbar (Standard `pool`). Veröffentlicht werden:
 | `pool/flow` | 1 = Filter läuft, 0 = steht |
 | `pool/pump1/relay`, `pool/pump2/relay` | 1 = an |
 | `pool/pump1/tank_percent`, `…/pump2/tank_percent` | Füllstand in % |
+| `pool/pump1/tank_ml`, `…/pump2/tank_ml` | Füllstand in ml |
 | `pool/pump1/runtime_s`, `…/pump2/runtime_s` | Gesamtlaufzeit in Sekunden |
+| `pool/pump1/day_runtime_s`, `…/pump2/day_runtime_s` | Laufzeit heute in Sekunden |
+| `pool/pump1/day_doses`, `…/pump2/day_doses` | Dosierungen heute |
 | `pool/pump1/state`, `…/pump2/state` | Statustext |
 | `pool/state` | komplettes JSON wie `/api/status` |
 | `pool/status` | `online` / `offline` (Last Will, retained) |
@@ -273,7 +284,8 @@ Es wird per HTTP im Line Protocol geschrieben (Tag `device` = Gerätename, Measu
 | 1.8 | `/write?db=<Datenbank>` | optional Benutzer und Passwort |
 | 2.x | `/api/v2/write?org=<Organisation>&bucket=<Bucket>` | API-Token |
 
-Felder: `temperature`, `ph`, `orp`, `flow`, `relay1`, `relay2`, `tank1_percent`, `tank2_percent`, `pump1_runtime_s`, `pump2_runtime_s`.
+Felder: `temperature`, `ph`, `orp`, `flow`, `relay1`, `relay2` sowie je Pumpe (N = 1, 2) `tankN_percent`, `tankN_ml`,
+`pumpN_runtime_s`, `pumpN_day_runtime_s` und `pumpN_day_doses`. Damit sind alle dauerhaft gespeicherten Zählerwerte im Monitoring vorhanden.
 Bei `https://` wird das Zertifikat nicht geprüft.
 
 ## HTTP-Schnittstelle
@@ -302,6 +314,18 @@ So findest du sie:
 Gelesen wird nur die Leitung vom Mess-Mikrocontroller zum CB3S (CB3S Pin 15 = P10/RX1). Der TX des ESP32 bleibt unbeschaltet,
 damit er den Bus nicht stört. Die Pinbelegung des CB3S sollte vor dem Löten mit Multimeter oder Datenblatt geprüft werden.
 
+## Flash-Verschleiß
+
+Einstellungen und Zähler liegen im NVS des ESP32 (mit Wear-Leveling), nicht in einer Datei. Geschrieben wird nur bei Änderungen:
+
+- **Einstellungen:** nur beim Speichern, und nur Werte, die sich geändert haben.
+- **Zähler und Behälterstand:** nur bei Änderungen und höchstens alle 2 Stunden (einstellbar, 5–1440 min), sofort nur bei Benutzeraktionen, Tageswechsel, Neustart über die Oberfläche und OTA-Update.
+- **Messwerte, Weboberfläche, MQTT, InfluxDB:** keine Flash-Zugriffe.
+- **Beim Start:** zwei kleine Schreibzugriffe für die Erkennung des Reset-Doppeldrucks.
+
+Ein Speichervorgang ist kein Löschzyklus: Der NVS hängt kleine Einträge (je 32 Byte) an einen 4-KB-Sektor an und löscht diesen erst, wenn er voll ist,
+und verteilt das auf mehrere Sektoren. Mit dem Standardintervall liegt die Last deutlich unter der typischen Lebensdauer von etwa 100.000 Löschzyklen je Sektor.
+
 ## Fehlersuche
 
 | Problem | Ursache / Lösung |
@@ -316,7 +340,9 @@ damit er den Bus nicht stört. Die Pinbelegung des CB3S sollte vor dem Löten mi
 
 ## Bekannte Einschränkungen
 
-- Behälterstand und Zähler sind berechnet. Bei Stromausfall mitten in einem Impuls geht dessen Laufzeit verloren.
+- Behälterstand und Zähler sind berechnet. Sie werden zur Schonung des Flash-Speichers nur bei Änderungen und höchstens im eingestellten Intervall (Standard 2 Stunden) gespeichert,
+  sofort bei Benutzeraktionen, Tageswechsel, Neustart über die Oberfläche und WLAN-Update.
+  Bei Stromausfall, Druck auf die Reset-Taste oder Absturz gehen die Änderungen seit dem letzten Speichern verloren (inklusive der Tageszähler der Sicherungen).
 - Weboberfläche und Passwort laufen über unverschlüsseltes HTTP.
 - Das Roaming ist einfach gehalten (Neuverbindung bei schwachem Signal), kein 802.11k/v/r.
 - Die Regelung kennt keine Beckenvolumen- oder Wasserchemie-Berechnung. Mengen und Intervalle stellst du selbst ein.

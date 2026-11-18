@@ -103,10 +103,23 @@ const dur=s=>{s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floo
 if(location.search.includes('saved'))$('saved').style.display='block';
 const nm=['Pumpe 1 · pH-Minus','Pumpe 2 · Chlor / Redox'];
 $('maint').innerHTML=nm.map((n,i)=>`<div class="card"><div class="l">${n}</div><div id="m${i}" style="margin:6px 0"></div>
+<small>Gespeicherte Werte. Zum Wiederherstellen nach einem Stromausfall überschreiben (z. B. mit den letzten Werten aus der InfluxDB).</small>
+<div class="row"><span>Füllstand (ml)</span><input id="sr${i}" type="number" step="any" min="0" style="width:110px"></div>
+<div class="row"><span>Gesamtlaufzeit (s)</span><input id="sg${i}" type="number" step="1" min="0" style="width:110px"></div>
+<div class="row"><span>Laufzeit heute (s)</span><input id="sd${i}" type="number" step="1" min="0" style="width:110px"></div>
+<div class="row"><span>Dosierungen heute</span><input id="sn${i}" type="number" step="1" min="0" style="width:110px"></div>
+<div class="row"><button type="button" onclick="setVals(${i})">Werte übernehmen</button><button type="button" class="sec" onclick="filled[${i}]=false;tick()">Neu laden</button></div>
 <div class="row"><button type="button" onclick="act('refill',${i})">Behälter aufgefüllt</button></div>
 <div class="row"><button type="button" class="sec" onclick="act('resetrun',${i})">Laufzeit-Zähler zurücksetzen</button></div>
 <div class="row"><button type="button" class="sec" onclick="act('resetday',${i})">Tageszähler zurücksetzen</button></div>
 <div class="row"><span>Test / Schlauch füllen</span><span><input id="pv${i}" type="number" value="10" min="1" max="120" style="width:70px"> s <button type="button" onclick="act('prime',${i},$('pv${i}').value)">Start</button></span></div></div>`).join('');
+const filled=[false,false];
+async function setVals(i){
+ const b=`a=setvals&i=${i}&rem=${$('sr'+i).value}&run=${$('sg'+i).value}&dayrun=${$('sd'+i).value}&doses=${$('sn'+i).value}`;
+ const r=await fetch('/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});
+ if(!r.ok){alert(r.status==409?'Die Pumpe läuft gerade. Bitte nach dem Ende des Impulses erneut versuchen.':'Fehler '+r.status);return}
+ filled[i]=false;tick();
+}
 async function act(a,i=0,v=0){
  if((a=='wifireset'||a=='reboot')&&!confirm('Wirklich?'))return;
  await fetch('/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`a=${a}&i=${i}&v=${v}`});
@@ -114,7 +127,7 @@ async function act(a,i=0,v=0){
 }
 async function tick(){
  try{const d=await getStatus();
-  d.p.forEach((p,i)=>{$('m'+i).innerHTML=`${p.state}<br><small>Behälter ${p.tankPct.toFixed(0)} % · Laufzeit gesamt ${dur(p.runSec)} · heute ${dur(p.dayRunSec)} / ${p.dayDoses} Dosierungen</small>`});
+  d.p.forEach((p,i)=>{if(!filled[i]){$('sr'+i).value=Math.round(p.tankMl);$('sg'+i).value=Math.round(p.runSec);$('sd'+i).value=Math.round(p.dayRunSec);$('sn'+i).value=p.dayDoses;filled[i]=true}$('m'+i).innerHTML=`${p.state}<br><small>Behälter ${p.tankPct.toFixed(0)} % · Laufzeit gesamt ${dur(p.runSec)} · heute ${dur(p.dayRunSec)} / ${p.dayDoses} Dosierungen</small>`});
  }catch(e){}
 }
 (async function loop(){await tick();setTimeout(loop,2000)})();

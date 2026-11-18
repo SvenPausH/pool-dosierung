@@ -45,6 +45,7 @@ struct Settings {
   // Pumpen / Behälter
   float mlPerMin[2] = {60.0f, 60.0f};
   float tankMl[2]   = {5000.0f, 5000.0f};
+  int   saveIntervalMin = 120;     // Zähler höchstens so oft in den Flash schreiben (nur bei Änderungen)
   // Sicherungen
   bool  sfFlow = true;
   bool  sfData = true;   int dataTimeoutMin = 3;
@@ -129,6 +130,7 @@ static const Param PARAMS[] = {
   fF("ml2",     "Pumpe 2: Förderleistung (ml/min)", S.mlPerMin[1], ""),
   fF("tank1",   "Behälter 1: Volumen (ml)", S.tankMl[0], ""),
   fF("tank2",   "Behälter 2: Volumen (ml)", S.tankMl[1], ""),
+  fI("saveInt", "Zähler speichern alle (min)", S.saveIntervalMin, "Nur bei Änderungen. Sofort gespeichert wird bei Neustart über die Oberfläche, WLAN-Update, Benutzeraktionen und Tageswechsel. Bei Stromausfall gehen Änderungen seit dem letzten Speichern verloren."),
 
   fH("Sicherungen"),
   fB("sfFlow",  "Dosieren nur bei Durchfluss", S.sfFlow, "Filterpumpe muss laufen. Dringend empfohlen."),
@@ -264,6 +266,7 @@ void sanitize() {
   S.mqttInterval = constrain(S.mqttInterval, 1, 3600);
   S.inflInterval = constrain(S.inflInterval, 1, 3600);
   S.inflVer = (S.inflVer == 1) ? 1 : 2;
+  S.saveIntervalMin = constrain(S.saveIntervalMin, 5, 1440);
   S.roamRssi = constrain(S.roamRssi, -95, -40);
   for (int i = 0; i < 2; i++) {
     if (S.mlPerMin[i] < 0.1f) S.mlPerMin[i] = 0.1f;
@@ -299,12 +302,26 @@ void saveSettings() {
 }
 
 // ===================== Zähler / Behälter (dauerhaft gespeichert) =====================
-void savePump(int i) {
+static bool stDirty[2] = {false, false};
+static uint32_t lastStSave = 0;
+
+static void writePump(int i) {
   char k[12];
   snprintf(k, sizeof k, "rem%d", i);  st.putFloat(k, P[i].remMl);
   snprintf(k, sizeof k, "run%d", i);  st.putFloat(k, P[i].totalRunSec);
   snprintf(k, sizeof k, "dRun%d", i); st.putFloat(k, P[i].dayRunSec);
   snprintf(k, sizeof k, "dN%d", i);   st.putUShort(k, P[i].dayDoses);
+}
+// Normal nur vormerken; sofort schreiben nur bei force (Benutzeraktion, Tageswechsel, Neustart)
+static void savePump(int i, bool force = false) {
+  if (force) { writePump(i); stDirty[i] = false; lastStSave = millis(); }
+  else stDirty[i] = true;
+}
+static void flushState(bool force) {
+  if (!stDirty[0] && !stDirty[1]) return;
+  if (!force && millis() - lastStSave < (uint32_t)S.saveIntervalMin * 60000UL) return;   // Flash schonen
+  for (int i = 0; i < 2; i++) if (stDirty[i]) { writePump(i); stDirty[i] = false; }
+  lastStSave = millis();
 }
 void loadState() {
   st.begin("st", false);
@@ -324,7 +341,7 @@ long currentDayId() {
   return (long)(t.tm_year + 1900) * 1000 + t.tm_yday + 1;
 }
 void resetDaily() {
-  for (int i = 0; i < 2; i++) { P[i].dayRunSec = 0; P[i].dayDoses = 0; savePump(i); }
+  for (int i = 0; i < 2; i++) { P[i].dayRunSec = 0; P[i].dayDoses = 0; savePump(i, true); }
 }
 void dayCheck() {
   long id = currentDayId();
@@ -464,6 +481,12 @@ void controlStep() {
   }
 }
 
+// Live-Werte: eine gerade laufende Dosierung wird mitgerechnet (für Anzeige, MQTT und InfluxDB)
+static float liveElapsedSec(int i) { return P[i].on ? (millis() - P[i].startMs) / 1000.0f : 0.0f; }
+static float liveRemMl(int i) { float r = P[i].remMl - S.mlPerMin[i] * liveElapsedSec(i) / 60.0f; return r < 0 ? 0 : r; }
+static float liveRunSec(int i) { return P[i].totalRunSec + liveElapsedSec(i); }
+static float liveDayRunSec(int i) { return P[i].dayRunSec + liveElapsedSec(i); }
+
 // ===================== Status-LED =====================
 // Normal: kurzer Blitz bei jedem Messwert der W2839, Doppelblitz wenn das WLAN fehlt.
 void ledStep() {
@@ -553,8 +576,11 @@ void mqttPublishAll() {
   for (int i = 0; i < 2; i++) {
     String n = String("pump") + (i + 1);
     mqttPub((n + "/relay").c_str(), String(P[i].on ? 1 : 0));
-    mqttPub((n + "/tank_percent").c_str(), String(100.0f * P[i].remMl / S.tankMl[i], 1));
-    mqttPub((n + "/runtime_s").c_str(), String(P[i].totalRunSec, 0));
+    mqttPub((n + "/tank_percent").c_str(), String(100.0f * liveRemMl(i) / S.tankMl[i], 1));
+    mqttPub((n + "/tank_ml").c_str(), String(liveRemMl(i), 0));
+    mqttPub((n + "/runtime_s").c_str(), String(liveRunSec(i), 0));
+    mqttPub((n + "/day_runtime_s").c_str(), String(liveDayRunSec(i), 0));
+    mqttPub((n + "/day_doses").c_str(), String(P[i].dayDoses));
     mqttPub((n + "/state").c_str(), String(P[i].state));
   }
   mqttPub("state", statusJson());
@@ -569,9 +595,14 @@ void influxSend() {
   addF("temperature", temperature, 1); addF("ph", ph, 2); addF("orp", orp, 0);
   addI("flow", flowStable ? 1 : 0);
   addI("relay1", P[0].on ? 1 : 0); addI("relay2", P[1].on ? 1 : 0);
-  addF("tank1_percent", 100.0f * P[0].remMl / S.tankMl[0], 1);
-  addF("tank2_percent", 100.0f * P[1].remMl / S.tankMl[1], 1);
-  addF("pump1_runtime_s", P[0].totalRunSec, 0); addF("pump2_runtime_s", P[1].totalRunSec, 0);
+  for (int i = 0; i < 2; i++) {
+    char k[32];
+    snprintf(k, sizeof k, "tank%d_percent", i + 1);       addF(k, 100.0f * liveRemMl(i) / S.tankMl[i], 1);
+    snprintf(k, sizeof k, "tank%d_ml", i + 1);            addF(k, liveRemMl(i), 0);
+    snprintf(k, sizeof k, "pump%d_runtime_s", i + 1);     addF(k, liveRunSec(i), 0);
+    snprintf(k, sizeof k, "pump%d_day_runtime_s", i + 1); addF(k, liveDayRunSec(i), 0);
+    snprintf(k, sizeof k, "pump%d_day_doses", i + 1);     addI(k, P[i].dayDoses);
+  }
 
   String url = S.inflUrl;
   while (url.endsWith("/")) url.remove(url.length() - 1);
@@ -779,7 +810,7 @@ void handleSave() {
   sanitize();
   saveSettings();
   applyTime();
-  for (int i = 0; i < 2; i++) savePump(i);
+  for (int i = 0; i < 2; i++) savePump(i, true);
   if (strcmp(oldSsid, S.wifiSsid) != 0 || strcmp(oldPass, S.wifiPass) != 0) restartAtMs = millis() + 2000;   // neue WLAN-Daten -> Neustart
   if (strcmp(oldNtp, S.ntpServer) != 0 || oldNtpDhcp != S.ntpDhcp) restartAtMs = millis() + 2000;           // NTP-Quelle geändert -> Neustart
   server.sendHeader("Location", "/settings?saved=1");
@@ -790,9 +821,17 @@ void handleAction() {
   String a = server.arg("a");
   int i = constrain(server.arg("i").toInt(), 0, 1);
   float v = server.arg("v").toFloat();
-  if (a == "refill") { P[i].remMl = S.tankMl[i]; savePump(i); }
-  else if (a == "resetrun") { P[i].totalRunSec = 0; savePump(i); }
-  else if (a == "resetday") { P[i].dayRunSec = 0; P[i].dayDoses = 0; savePump(i); }
+  if (a == "refill") { P[i].remMl = S.tankMl[i]; savePump(i, true); }
+  else if (a == "resetrun") { P[i].totalRunSec = 0; savePump(i, true); }
+  else if (a == "resetday") { P[i].dayRunSec = 0; P[i].dayDoses = 0; savePump(i, true); }
+  else if (a == "setvals") {                       // gespeicherte Werte überschreiben (z. B. nach Stromausfall)
+    if (P[i].on) { server.send(409, "text/plain", "Pumpe läuft"); return; }
+    if (server.arg("rem").length())    P[i].remMl = constrain(server.arg("rem").toFloat(), 0.0f, S.tankMl[i]);
+    if (server.arg("run").length())    P[i].totalRunSec = max(0.0f, server.arg("run").toFloat());
+    if (server.arg("dayrun").length()) P[i].dayRunSec = max(0.0f, server.arg("dayrun").toFloat());
+    if (server.arg("doses").length())  P[i].dayDoses = (uint16_t)constrain(server.arg("doses").toInt(), 0, 65535);
+    savePump(i, true);
+  }
   else if (a == "prime") { if (!P[i].on) pumpOn(i, (uint32_t)constrain(v, 1.0f, 120.0f) * 1000UL); }
   else if (a == "stop") { pumpOff(0); pumpOff(1); }
   else if (a == "reboot") { net.putBool("drd", false); restartAtMs = millis() + 1000; }
@@ -880,7 +919,7 @@ void loop() {
   static uint32_t tLed = 0;
   if (millis() - tLed >= 20) { tLed = millis(); ledStep(); }
   static uint32_t tWifi = 0;
-  if (millis() - tWifi >= 1000) { tWifi = millis(); wifiWatch(); roamStep(); }
+  if (millis() - tWifi >= 1000) { tWifi = millis(); wifiWatch(); roamStep(); flushState(false); }
   if (otaStarted) ArduinoOTA.handle();
 
   if (gotIp) {
@@ -890,13 +929,13 @@ void loop() {
     if (!otaStarted) {
       ArduinoOTA.setHostname(S.devName);
       if (S.authEnabled && S.adminPass[0]) ArduinoOTA.setPassword(S.adminPass);
-      ArduinoOTA.onStart([]() { pumpOff(0); pumpOff(1); });
+      ArduinoOTA.onStart([]() { pumpOff(0); pumpOff(1); flushState(true); });
       ArduinoOTA.begin();
       otaStarted = true;
     }
   }
   if (drdPending && millis() > 4000) { net.putBool("drd", false); drdPending = false; }
-  if (restartAtMs && (int32_t)(millis() - restartAtMs) >= 0) { pumpOff(0); pumpOff(1); ESP.restart(); }
+  if (restartAtMs && (int32_t)(millis() - restartAtMs) >= 0) { pumpOff(0); pumpOff(1); flushState(true); ESP.restart(); }
 
   static uint32_t tPrint = 0;
   if (millis() - tPrint > 10000) {
